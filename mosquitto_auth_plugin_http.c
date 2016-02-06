@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
 #include <curl/curl.h>
@@ -35,6 +36,7 @@ int mosquitto_auth_plugin_init(void **user_data, struct mosquitto_auth_opt *auth
   if (http_acl_uri == NULL) {
     http_acl_uri = DEFAULT_ACL_URI;
   }
+  mosquitto_log_printf(MOSQ_LOG_INFO, "http_user_uri = %s, http_acl_uri = %s", http_user_uri, http_acl_uri);
 #ifdef MQAP_DEBUG
     fprintf(stderr, "http_user_uri = %s, http_acl_uri = %s\n", http_user_uri, http_acl_uri);
 #endif
@@ -60,44 +62,56 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
 #ifdef MQAP_DEBUG
   fprintf(stderr, "mosquitto_auth_unpwd_check: username=%s, password=%s\n", username, password);
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "mosquitto_auth_unpwd_check: username=%s, password=%s", username, password);
 
   int rc;
   int rv;
   CURL *ch;
 
   if ((ch = curl_easy_init()) == NULL) {
+    mosquitto_log_printf(MOSQ_LOG_WARNING, "failed to initialize curl (curl_easy_init AUTH): %s", strerror(errno));
 #ifdef MQAP_DEBUG
     fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
 #endif
     return MOSQ_ERR_AUTH;
   }
 
-  char data[128];
   char *escaped_username;
   char *escaped_password;
   escaped_username = curl_easy_escape(ch, username, 0);
   escaped_password = curl_easy_escape(ch, password, 0);
-  sprintf(data, "username=%s&password=%s", escaped_username, escaped_password);
+  size_t data_len = strlen("username=&password=") + strlen(escaped_username) + strlen(escaped_password) + 1;
+  char* data = NULL;
+  if ((data = malloc(data_len)) == NULL) { 
+	mosquitto_log_printf(MOSQ_LOG_WARNING, "failed allocate data memory (%u): %s", data_len, strerror(errno));
+#ifdef MQAP_DEBUG
+    	fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
+#endif
+	rv = -1;
+  } else {
+	memset(data, 0, data_len);
+  	snprintf(data, data_len, "username=%s&password=%s", escaped_username, escaped_password);
+
+  	curl_easy_setopt(ch, CURLOPT_POST, 1L);
+  	curl_easy_setopt(ch, CURLOPT_URL, http_user_uri);
+  	curl_easy_setopt(ch, CURLOPT_POSTFIELDS, data);
+  	curl_easy_setopt(ch, CURLOPT_POSTFIELDSIZE, strlen(data));
+
+  	if ((rv = curl_easy_perform(ch)) == CURLE_OK) {
+    		curl_easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &rc);
+    		rv = rc;
+  	} else {
+#ifdef MQAP_DEBUG
+    		fprintf(stderr, "%s\n", curl_easy_strerror(rv));
+#endif
+    		rv = -1;
+  	}
+  }
   curl_free(escaped_username);
   curl_free(escaped_password);
-
-  curl_easy_setopt(ch, CURLOPT_POST, 1L);
-  curl_easy_setopt(ch, CURLOPT_URL, http_user_uri);
-  curl_easy_setopt(ch, CURLOPT_POSTFIELDS, data);
-  curl_easy_setopt(ch, CURLOPT_POSTFIELDSIZE, strlen(data));
-
-  if ((rv = curl_easy_perform(ch)) == CURLE_OK) {
-    curl_easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &rc);
-    rv = rc;
-  } else {
-#ifdef MQAP_DEBUG
-    fprintf(stderr, "%s\n", curl_easy_strerror(rv));
-#endif
-    rv = -1;
-  }
-
   curl_easy_cleanup(ch);
-
+  free(data);
+  data = NULL;
   if (rv == -1) {
     return MOSQ_ERR_AUTH;
   }
@@ -106,6 +120,7 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
     fprintf(stderr, "HTTP response code = %d\n", rc);
   }
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "HTTP response code = %d", rc);
 
   return (rc == 200 ? MOSQ_ERR_SUCCESS : MOSQ_ERR_AUTH);
 }
@@ -118,60 +133,72 @@ int mosquitto_auth_acl_check(void *user_data, const char *clientid, const char *
   }
 
   char access_name[6];
-  if (access == 0) {
-    sprintf(access_name, "none");
-  } else if (access == 1) {
+  if (access == MOSQ_ACL_READ) {
     sprintf(access_name, "read");
-  } else if (access == 2) {
+  } else if (access == MOSQ_ACL_WRITE) {
     sprintf(access_name, "write");
+  } else {
+    sprintf(access_name, "none");
   }
 
 #ifdef MQAP_DEBUG
   fprintf(stderr, "mosquitto_auth_acl_check: clientid=%s, username=%s, topic=%s, access=%s\n",
     clientid, username, topic, access_name);
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "mosquitto_auth_acl_check: clientid=%s, username=%s, topic=%s, access=%s", 
+    clientid, username, topic, access_name);
 
   int rc;
   int rv;
   CURL *ch;
 
   if ((ch = curl_easy_init()) == NULL) {
+     mosquitto_log_printf(MOSQ_LOG_WARNING, "failed to initialize curl (curl_easy_init ACL): %s", strerror(errno));
 #ifdef MQAP_DEBUG
     fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
 #endif
     return MOSQ_ERR_ACL_DENIED;
   }
 
-  char data[512];
   char *escaped_clientid;
   char *escaped_username;
   char *escaped_topic;
   escaped_clientid = curl_easy_escape(ch, clientid, 0);
   escaped_username = curl_easy_escape(ch, username, 0);
   escaped_topic = curl_easy_escape(ch, topic, 0);
-  sprintf(data, "clientid=%s&username=%s&topic=%s&access=%s",
-    escaped_clientid, escaped_username, escaped_topic, access_name);
+  size_t data_len = strlen("clientid=&username=&topic=&access=") + strlen(escaped_clientid) + strlen(escaped_username) + strlen(escaped_topic) + strlen(access_name) + 1;
+  char* data = NULL;
+  if ((data = malloc(data_len)) == NULL) { 
+	mosquitto_log_printf(MOSQ_LOG_WARNING, "failed allocate data memory (%u): %s", data_len, strerror(errno));
+#ifdef MQAP_DEBUG
+    	fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
+#endif
+	rv = -1;
+  } else {
+	memset(data, 0, data_len);
+  	snprintf(data, data_len, "clientid=%s&username=%s&topic=%s&access=%s",
+    		escaped_clientid, escaped_username, escaped_topic, access_name);
+	curl_easy_setopt(ch, CURLOPT_POST, 1L);
+	curl_easy_setopt(ch, CURLOPT_URL, http_acl_uri);
+	curl_easy_setopt(ch, CURLOPT_POSTFIELDS, data);
+	curl_easy_setopt(ch, CURLOPT_POSTFIELDSIZE, strlen(data));
+
+  	if ((rv = curl_easy_perform(ch)) == CURLE_OK) {
+	    curl_easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &rc);
+	    rv = rc;
+	} else {
+#ifdef MQAP_DEBUG
+	    fprintf(stderr, "%s\n", curl_easy_strerror(rv));
+#endif
+	    rv = -1;
+	}
+  }
   curl_free(escaped_clientid);
   curl_free(escaped_username);
   curl_free(escaped_topic);
-
-  curl_easy_setopt(ch, CURLOPT_POST, 1L);
-  curl_easy_setopt(ch, CURLOPT_URL, http_acl_uri);
-  curl_easy_setopt(ch, CURLOPT_POSTFIELDS, data);
-  curl_easy_setopt(ch, CURLOPT_POSTFIELDSIZE, strlen(data));
-
-  if ((rv = curl_easy_perform(ch)) == CURLE_OK) {
-    curl_easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &rc);
-    rv = rc;
-  } else {
-#ifdef MQAP_DEBUG
-    fprintf(stderr, "%s\n", curl_easy_strerror(rv));
-#endif
-    rv = -1;
-  }
-
   curl_easy_cleanup(ch);
-
+  free(data);
+  data = NULL;
   if (rv == -1) {
     return MOSQ_ERR_ACL_DENIED;
   }
@@ -180,6 +207,7 @@ int mosquitto_auth_acl_check(void *user_data, const char *clientid, const char *
     fprintf(stderr, "HTTP response code = %d\n", rc);
   }
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "HTTP response code = %d", rc);
 
   return (rc == 200 ? MOSQ_ERR_SUCCESS : MOSQ_ERR_ACL_DENIED);
 }
