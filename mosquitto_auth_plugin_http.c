@@ -36,6 +36,7 @@ int mosquitto_auth_plugin_init(void **user_data, struct mosquitto_auth_opt *auth
   if (http_acl_uri == NULL) {
     http_acl_uri = DEFAULT_ACL_URI;
   }
+  mosquitto_log_printf(MOSQ_LOG_INFO, "http_user_uri = %s, http_acl_uri = %s", http_user_uri, http_acl_uri);
 #ifdef MQAP_DEBUG
     fprintf(stderr, "http_user_uri = %s, http_acl_uri = %s\n", http_user_uri, http_acl_uri);
 #endif
@@ -61,12 +62,14 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
 #ifdef MQAP_DEBUG
   fprintf(stderr, "mosquitto_auth_unpwd_check: username=%s, password=%s\n", username, password);
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "mosquitto_auth_unpwd_check: username=%s, password=%s", username, password);
 
   int rc;
   int rv;
   CURL *ch;
 
   if ((ch = curl_easy_init()) == NULL) {
+    mosquitto_log_printf(MOSQ_LOG_WARNING, "failed to initialize curl (curl_easy_init AUTH): %s", strerror(errno));
 #ifdef MQAP_DEBUG
     fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
 #endif
@@ -80,6 +83,7 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
   size_t data_len = strlen("username=&password=") + strlen(escaped_username) + strlen(escaped_password) + 1;
   char* data = NULL;
   if ((data = malloc(data_len)) == NULL) { 
+	mosquitto_log_printf(MOSQ_LOG_WARNING, "failed allocate data memory (%u): %s", data_len, strerror(errno));
 #ifdef MQAP_DEBUG
     	fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
 #endif
@@ -116,6 +120,7 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
     fprintf(stderr, "HTTP response code = %d\n", rc);
   }
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "HTTP response code = %d", rc);
 
   return (rc == 200 ? MOSQ_ERR_SUCCESS : MOSQ_ERR_AUTH);
 }
@@ -140,12 +145,15 @@ int mosquitto_auth_acl_check(void *user_data, const char *clientid, const char *
   fprintf(stderr, "mosquitto_auth_acl_check: clientid=%s, username=%s, topic=%s, access=%s\n",
     clientid, username, topic, access_name);
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "mosquitto_auth_acl_check: clientid=%s, username=%s, topic=%s, access=%s", 
+    clientid, username, topic, access_name);
 
   int rc;
   int rv;
   CURL *ch;
 
   if ((ch = curl_easy_init()) == NULL) {
+     mosquitto_log_printf(MOSQ_LOG_WARNING, "failed to initialize curl (curl_easy_init ACL): %s", strerror(errno));
 #ifdef MQAP_DEBUG
     fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
 #endif
@@ -160,7 +168,8 @@ int mosquitto_auth_acl_check(void *user_data, const char *clientid, const char *
   escaped_topic = curl_easy_escape(ch, topic, 0);
   size_t data_len = strlen("clientid=&username=&topic=&access=") + strlen(escaped_clientid) + strlen(escaped_username) + strlen(escaped_topic) + strlen(access_name) + 1;
   char* data = NULL;
-if ((data = malloc(data_len)) == NULL) { 
+  if ((data = malloc(data_len)) == NULL) { 
+	mosquitto_log_printf(MOSQ_LOG_WARNING, "failed allocate data memory (%u): %s", data_len, strerror(errno));
 #ifdef MQAP_DEBUG
     	fprintf(stderr, "malloc(): %s [%s, %d]\n", strerror(errno), __FILE__, __LINE__);
 #endif
@@ -198,6 +207,7 @@ if ((data = malloc(data_len)) == NULL) {
     fprintf(stderr, "HTTP response code = %d\n", rc);
   }
 #endif
+  mosquitto_log_printf(MOSQ_LOG_DEBUG, "HTTP response code = %d", rc);
 
   return (rc == 200 ? MOSQ_ERR_SUCCESS : MOSQ_ERR_ACL_DENIED);
 }
